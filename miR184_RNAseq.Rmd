@@ -3,7 +3,7 @@ title: "R Notebook"
 output: html_notebook
 ---
 ```{r}
-spls = list.files("/mnt/wspolny/sbaluszek/pitnet/aligned")
+spls = list.files("/mnt/ext/sbaluszek/pitnet/aligned")
 spls = data.frame(sample = spls,
                   type = factor(tstrsplit(spls, "_")[[1]], levels = c("NEG", "MIR184")))
 spls
@@ -20,7 +20,7 @@ X = NULL
 
 for(el in spls$sample){
 
-dt = fread(sprintf("/mnt/wspolny/sbaluszek/pitnet/aligned/%s/%s_ReadsPerGene.out.tab", el, el)) %>% 
+dt = fread(sprintf("/mnt/ext/sbaluszek/pitnet/aligned/%s/%s_ReadsPerGene.out.tab", el, el)) %>% 
   rename(feature_type = V1, both = V2, forward = V3, reverse = V4)
 
 qc = rbind(qc, 
@@ -88,7 +88,7 @@ ncts = counts(dds, normalized=TRUE)
 res_type = DESeq(dds)
 ```
 ```{r}
-trl = fread("/mnt/wspolny/sbaluszek/genomes/mouseSTAR/geneInfo.tab")
+trl = fread("/mnt/ext/sbaluszek/genomes/mouseSTAR/geneInfo.tab")
 trl = trl %>% 
   rename(gene_id = `57186`,
          gene_name = V2,
