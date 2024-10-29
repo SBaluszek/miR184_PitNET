@@ -1,0 +1,262 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+spls = list.files("/mnt/wspolny/sbaluszek/pitnet/aligned")
+spls = data.frame(sample = spls,
+                  type = factor(tstrsplit(spls, "_")[[1]], levels = c("NEG", "MIR184")))
+spls
+```
+
+```{r}
+el = "MIR184_1"
+```
+
+
+```{r}
+qc = NULL
+X = NULL
+
+for(el in spls$sample){
+
+dt = fread(sprintf("/mnt/wspolny/sbaluszek/pitnet/aligned/%s/%s_ReadsPerGene.out.tab", el, el)) %>% 
+  rename(feature_type = V1, both = V2, forward = V3, reverse = V4)
+
+qc = rbind(qc, 
+           dt %>% mutate(feature_type = ifelse(grepl("ENS", feature_type), "mapped", feature_type)) %>% 
+  group_by(feature_type) %>% summarise(both = sum(both), forward = sum(forward), reverse = sum(reverse)) %>% 
+  mutate(sample = el))
+
+
+if(is.null(X)){
+  X = dt %>% select(feature_type, both) %>% dplyr::rename(!!el := both) %>% filter(grepl("ENS", feature_type))
+} else {
+  X = left_join(X, 
+            dt %>% select(feature_type, both) %>% dplyr::rename(!!el := both) %>% filter(grepl("ENS", feature_type)),
+            by = "feature_type")
+}
+
+}
+
+X = X %>% column_to_rownames("feature_type") %>% as.matrix()
+
+```
+
+```{r}
+spl_col = c("MIR184_1" = "coral", "MIR184_2" = "red", "MIR184_3" = "red4", "NEG_1" = "royalblue", "NEG_2" = "blue", "NEG_3" = "navy", "   " = "transparent")
+```
+
+
+```{r}
+qc2 = qc %>% group_by(sample) %>% summarise(`Sequencing depth` = sum(both)) %>% 
+  left_join(qc %>% group_by(sample) %>% filter(feature_type == "N_unmapped") %>% summarise(unmapped = sum(both))) %>% 
+  left_join(qc %>% group_by(sample) %>% filter(feature_type == "mapped") %>% summarise(mapped = sum(both))) %>% 
+  mutate(`% unmapped\nto genome` = 100*unmapped / `Sequencing depth`,
+         `% mapped\nto genomic features` = 100*mapped / `Sequencing depth`)
+
+qcp2 = qc2 %>% pivot_longer(cols = c("% unmapped\nto genome", "% mapped\nto genomic features", "Sequencing depth"),
+                     names_to = "feature") %>% 
+  mutate(feature = factor(feature, levels = c("Sequencing depth", "% mapped\nto genomic features", "% unmapped\nto genome"))) %>% 
+  left_join(spls) %>% 
+  ggplot() +
+  geom_jitter(aes(x = type, y = value, color = sample), height = 0, width = 0.2) +
+  geom_point(data = data.frame(type = "MIR184", value = 0, sample = "   ", feature = factor(c("Sequencing depth", "% mapped\nto genomic features", "% unmapped\nto genome"), levels = c("Sequencing depth", "% mapped\nto genomic features", "% unmapped\nto genome"))), aes(x = type, y = value, color = sample)) +
+  facet_wrap(feature~., scales = "free", strip.position = "left") +
+  scale_color_manual(values = spl_col) +
+  theme_bw() + theme(panel.grid.minor = element_blank(), panel.grid.major.x = element_blank(),
+                     axis.title = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+qcp2
+```
+
+```{r}
+spls
+```
+
+```{r}
+dds = DESeqDataSetFromMatrix(countData = X,
+                             colData = spls %>% column_to_rownames("sample"),
+                             design = ~ type)
+
+
+dds = dds[rowSums(counts(dds) > 2) > 2,]
+dds = estimateSizeFactors(dds)
+
+ncts = counts(dds, normalized=TRUE)
+
+res_type = DESeq(dds)
+```
+```{r}
+trl = fread("/mnt/wspolny/sbaluszek/genomes/mouseSTAR/geneInfo.tab")
+trl = trl %>% 
+  rename(gene_id = `57186`,
+         gene_name = V2,
+         gene_biotype = V3)
+
+trl
+```
+
+
+```{r}
+res = results(res_type) %>% as.data.frame() %>% arrange(pvalue) %>% 
+  rename_with(function(el){paste0(el, "_miR184")}) %>% 
+  rownames_to_column("gene_id") %>% 
+  left_join(trl)
+
+res
+```
+
+```{r}
+
+```
+
+
+```{r}
+scts = vst(dds) %>% assay()
+```
+
+
+```{r}
+scts[res %>% filter(padj_miR184 < 0.05) %>% arrange(stat_miR184) %>% pull(gene_id),] %>% heatmap(Rowv = NA)
+scts[c("ENSMUSG00000052684", "ENSMUSG00000023068"),] %>% heatmap(Rowv = NA)
+```
+
+
+```{r}
+pca = prcomp(scts %>% t() %>% scale())
+```
+
+```{r}
+pca$sdev[1]/sum(pca$sdev)
+```
+
+
+```{r}
+qcp1 = pca$x %>% as.data.frame() %>% rownames_to_column("sample") %>% 
+  ggplot() + geom_point(aes(x = PC1, y = PC2, color = sample)) +
+  scale_color_manual(values = spl_col) +
+  coord_fixed() +
+  theme_bw() + theme(panel.grid = element_blank()) +
+  labs(x = sprintf("PC1 explains %s%% of variability", signif(100*pca$sdev[1]/sum(pca$sdev), 2)),
+       y = sprintf("PC2 explains %s%% of variability", signif(100*pca$sdev[2]/sum(pca$sdev), 2)),
+       title = "Principal component analysis")
+```
+
+```{r}
+(ggpubr::ggarrange(qcp1, qcp2 + theme(legend.position = "none")) +
+  theme(plot.background = element_rect(colour = "white", fill = "white"))) %>% 
+  ggsave(filename = "QC.png", width = 210-20, height = 0.25*(297-20), units = "mm", dpi = 400, scale = 1.5)
+```
+
+```{r}
+
+plt_volcano = function(res_df, ntp = 5, el, cl, gtp = NULL){
+  p = res_df %>% mutate(lfc = res_df %>% pull(sprintf("log2FoldChange_%s", el)),
+                        stat = res_df %>% pull(sprintf("stat_%s", el)),
+                    pval = res_df %>% pull(sprintf("pvalue_%s", el)),
+                    padj = res_df %>% pull(sprintf("padj_%s", el)),
+                    pc = ifelse(gene_biotype == "protein_coding", "yes", "no"),
+                    dr = ifelse(padj > 0.05 | is.na(padj), "ns", ifelse(lfc > 0, "upregulated", "downregulated")))
+  
+  res = p %>% ggplot() +
+    geom_point(aes(x = lfc, y = -log10(pval), shape = pc, color = dr), alpha = 0.5, stroke = 0) +
+    scale_shape_manual(values = c("yes" = 15, "no" = 18), name = "Protein\ncoding") +
+    scale_color_manual(values = cl, name = "Diff. expr.", guide = guide_none()) +
+    labs(title = el, x = "log<sub>  2</sub> fold-change", y = "-log<sub>  10</sub> p-value") +
+    theme_bw() + theme(axis.title.x = ggtext::element_markdown(), axis.title.y = ggtext::element_markdown())
+  
+  add_to_plot = p %>% arrange(stat)  %>%  filter(pc == "yes" & padj < 0.05 & stat < 0) %>% pull("gene_id")
+  tmp = p %>% arrange(lfc)  %>%  filter(pc == "yes" & padj < 0.05 & stat < 0) %>% pull("gene_id")
+  add_to_plot = unique(c(add_to_plot[1:ntp], intersect(add_to_plot, gtp), tmp[1:ntp]))
+  print(add_to_plot)
+  res = res + geom_text_repel(data = p %>% filter(gene_id %in% add_to_plot),
+                 mapping = aes(x = lfc, y = -log10(pval), label = gene_name),
+                 min.segment.length = 0, nudge_x = -0.5, size = 2, box.padding = 0.5)
+  
+  add_to_plot = p %>% arrange(-stat)  %>%  filter(pc == "yes" & padj < 0.05 & stat > 0) %>% pull("gene_id")
+  tmp = p %>% arrange(-lfc)  %>%  filter(pc == "yes" & padj < 0.05 & stat > 0) %>% pull("gene_id")
+  add_to_plot = unique(c(add_to_plot[1:ntp], intersect(add_to_plot, gtp), tmp[1:ntp]))
+  
+  res = res + geom_text_repel(data = p %>% filter(gene_id %in% add_to_plot),
+                              mapping = aes(x = lfc, y = -log10(pval), label = gene_name),
+                 min.segment.length = 0, nudge_x = 0.5, size = 2, box.padding = 0.5)
+  
+  return(res)
+  
+  
+}
+
+```
+
+```{r}
+vp = plt_volcano(res, el = "miR184", cl = c("upregulated" = "blue", "downregulated" = "red", "ns" = "gray"),
+            gtp = c("ENSMUSG00000052684", "ENSMUSG00000023068"))
+
+(vp +
+  theme(plot.background = element_rect(colour = "white", fill = "white"))) %>% 
+  ggsave(filename = "vp.png", width = 0.33*(210-20), height = 0.25*(297-20), units = "mm", dpi = 400, scale = 1.5)
+```
+
+```{r}
+X %>% as.data.frame() %>% rownames_to_column("gene_id") %>% 
+  fwrite("miR184_cts.csv")
+```
+
+
+
+```{r}
+res
+```
+
+```{r}
+res %>% fwrite(file = "DEGs.tsv", sep = "\t")
+```
+
+```{r}
+#GSEA
+library(msigdbr)
+library(fgsea)
+```
+
+
+```{r}
+gsts = list(
+  reactome = "REACTOME",
+  kegg = "KEGG",
+  mirDB = "MIR:MIRDB",
+  mirleg = "MIR:MIR_Legacy",
+  tfsGTRD = "TFT:GTRD",
+  tfsleg = "TFT:TFT_Legacy",
+  GOMF = "GO:MF",
+  GOBP = "GO:BP",
+  GOCC = "GO:CC"
+)
+
+gsts = lapply(gsts, function(el){msigdbr::msigdbr(subcategory = el, species = "Mus musculus")})
+gsts$GO = rbind(gsts$GOMF, gsts$GOBP)
+gsts$hallmark = msigdbr::msigdbr(category = "H", species = "Mus musculus")
+gsts = gsts[setdiff(names(gsts), c("GOMF", "GOBP"))]
+
+gsts
+```
+
+
+```{r}
+gsea_type = lapply(gsts, function(gs){
+  gs_lst = split(gs$ensembl_gene, gs$gs_name)
+  q = setNames(res$stat_miR184, res$gene_id)
+  set.seed(2024)
+  res = fgseaMultilevel(pathways = gs_lst, stats = q, minSize = 5, maxSize = 750) %>% arrange(desc(abs(NES)))
+  return(res)
+})
+```
+
+
+
+
+
+```{r}
+res$gene_name[match((gsea_type$mirleg %>%  dplyr::filter(grepl("MIR184", pathway)))$leadingEdge[[1]], res$gene_id)]
+```
+
